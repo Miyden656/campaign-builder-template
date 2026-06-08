@@ -1,0 +1,76 @@
+name: Daily campaign builder
+
+# ─────────────────────────────────────────────────────────────────────────
+# Once a day: read email replies, file each answer into its campaign bible,
+# distill durable facts into the canon ledger, advance the current themed
+# sprint, and email the next question(s). Commits state + bibles + back-pocket.
+# That commit doubles as a "keepalive" so GitHub never disables the schedule
+# under the 60-day-inactivity rule. A campaign only advances when you answer,
+# so it waits for you and never nags.
+# ─────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    # Cron is ALWAYS UTC and does NOT adjust for Daylight Saving Time.
+    # Target: 8:00 PM US Central (America/Chicago) — an evening wind-down reward.
+    #   • Summer (CDT, UTC-5):  8:00 PM Central = 01:00 UTC next day  <-- current setting
+    #   • Winter (CST, UTC-6):  8:00 PM Central = 02:00 UTC next day
+    # Twice a year flip this one number: spring -> "0 1 * * *", fall -> "0 2 * * *".
+    - cron: "0 1 * * *"
+  workflow_dispatch: {}   # manual "advance now" button in the Actions tab
+
+permissions:
+  contents: write   # needed to commit state + bibles + back-pocket back
+
+concurrency:
+  group: daily-campaign
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # No pip install — campaign_builder.py uses the Python standard library only.
+
+      - name: Advance campaigns
+        env:
+          # Secrets (Settings → Secrets and variables → Actions):
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_APP_PASSWORD: ${{ secrets.SENDER_APP_PASSWORD }}
+          CAMPAIGN_RECIPIENT: ${{ secrets.CAMPAIGN_RECIPIENT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SENDER_NAME: ${{ secrets.SENDER_NAME }}
+          # Non-secret config:
+          SMTP_SERVER: smtp.gmail.com
+          SMTP_PORT: "465"
+          USE_SSL: "true"
+          IMAP_SERVER: imap.gmail.com
+          IMAP_PORT: "993"
+          IMAP_FOLDER: INBOX          # the mailbox the script reads. INBOX works for a single-account setup; use a Gmail label if you archive (see README)
+          TIMEZONE: America/Chicago    # change to your timezone, e.g. America/New_York
+          # AI swap point — to use a paid provider, change these + add its key secret:
+          AI_PROVIDER: gemini
+          AI_MODEL: gemini-2.5-flash
+          # Optional: resend a question once after N days of silence (0 = never nag):
+          RESEND_AFTER_DAYS: "0"
+        run: python campaign_builder.py
+
+      - name: Commit state + bibles + back-pocket (keepalive)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add campaign_state.json bibles back-pocket
+          if [ -n "$(git status --porcelain campaign_state.json bibles back-pocket)" ]; then
+            git commit -m "Update campaign state + bibles + canon [skip ci]"
+            git push
+          else
+            echo "No changes; nothing to commit."
+          fi

@@ -1,0 +1,29 @@
+# Campaign Builder — your campaigns
+# ---------------------------------------------------------------------------
+# One per line:   system | working title | optional seed
+#
+#  - NO seed  -> the builder starts in BRAINSTORM mode: it pulls the premise,
+#    spine, and real name out of YOU through open questions (it never hands you
+#    the idea). This is the default and the fun part.
+#  - WITH a seed (a one-line idea you already had) -> it skips brainstorming and
+#    starts building straight from your idea.
+#  - The "working title" is just a stable handle for the files + email subject.
+#    Your real campaign name gets brainstormed into the bible. Rename the working
+#    title freely BEFORE answers pile up.
+#  - Comment a line out with a leading "#" to PAUSE it.
+#  - Add  [one-shot]  anywhere on the line for a short, runnable one-shot.
+#  - Keep ONE full campaign active at a time; use one-shots to stock back-pocket.
+#
+# Systems with built-in flavor: D&D 5e, Cosmere RPG, Avatar Legends. Any other
+# system works too (general AI knowledge + your flavor/<slug>.md notes).
+# Edit this on github.com from your phone; changes take effect on the next run.
+# ---------------------------------------------------------------------------
+
+# Your first campaign — no seed, so it starts in brainstorm mode.
+# Change "My Campaign" to any working title you like before the first run.
+D&D 5e | My Campaign
+
+# Examples for later (uncomment + edit when you want them):
+# Cosmere RPG | Working Title 2
+# D&D 5e | Quick Night | [one-shot]
+# D&D 5e | My Idea | A one-line premise you already had in your head

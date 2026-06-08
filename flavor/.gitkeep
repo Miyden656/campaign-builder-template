@@ -1,0 +1,3 @@
+# Optional per-campaign grounding notes, named to match the campaign slug
+# (e.g. my-campaign.md). If present, the AI treats it as that campaign's source
+# of truth. Slug = name lowercased with non-letters turned to hyphens.
