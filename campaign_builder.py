@@ -487,7 +487,7 @@ def _call_gemini(system, user, json_mode):
         raise AIError("GEMINI_API_KEY is not set.")
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{AI_MODEL}:generateContent?key={GEMINI_API_KEY}")
-    gen = {"temperature": 0.9, "maxOutputTokens": 1200}
+    gen = {"temperature": 0.9, "maxOutputTokens": 4096}
     if json_mode:
         gen["responseMimeType"] = "application/json"
     payload = {
@@ -505,7 +505,7 @@ def _call_gemini(system, user, json_mode):
 def _call_anthropic(system, user, json_mode):
     if not ANTHROPIC_API_KEY:
         raise AIError("ANTHROPIC_API_KEY is not set.")
-    payload = {"model": AI_MODEL, "max_tokens": 1200, "temperature": 0.9,
+    payload = {"model": AI_MODEL, "max_tokens": 4096, "temperature": 0.9,
                "system": system, "messages": [{"role": "user", "content": user}]}
     headers = {"Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY,
                "anthropic-version": "2023-06-01"}
@@ -519,7 +519,7 @@ def _call_anthropic(system, user, json_mode):
 def _call_openai(system, user, json_mode):
     if not OPENAI_API_KEY:
         raise AIError("OPENAI_API_KEY is not set.")
-    payload = {"model": AI_MODEL, "temperature": 0.9, "max_tokens": 1200,
+    payload = {"model": AI_MODEL, "temperature": 0.9, "max_tokens": 4096,
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}]}
     if json_mode:
@@ -686,12 +686,14 @@ def build_assessment_prompt(campaign, cstate, sprint, latest_answer, transcript)
         "Full bible so far for context:\n-----\n"
         f"{transcript.strip()}\n-----\n\n"
         "Do two jobs:\n"
-        "1) CANON: extract any DURABLE world facts stated in HIS answer "
+        "1) CANON: extract the DURABLE world facts stated in HIS answer "
         "(locations, NPCs, factions, items/powers and their limits, magic "
         "rules, timeline, arc decisions). Distill only what he actually said — "
         "never invent. Each fact: a category from [LOCATION, NPC, FACTION, "
-        "ITEM/POWER, MAGIC, TIMELINE, ARC, OTHER], a short name, and a one-line "
-        "fact.\n"
+        "ITEM/POWER, MAGIC, TIMELINE, ARC, OTHER], a short name, and ONE tight "
+        "line (<= 25 words). Capture the most important facts — up to about 15; "
+        "consolidate rather than listing every minor detail. Keep the whole JSON "
+        "compact.\n"
         "2) SPRINT STATUS: decide whether this sprint's element is now fleshed "
         "out enough to move on. If yes, write a 1-2 sentence recap built from "
         "HIS answers (not new invention).\n\n"
@@ -1146,8 +1148,13 @@ def main():
     if AI_PROVIDER == "gemini" and not GEMINI_API_KEY:
         missing.append("GEMINI_API_KEY")
     if missing:
-        print(f"ERROR: missing required env vars: {', '.join(missing)}")
-        return 1
+        # Not configured yet (e.g. a fresh copy of the repo, or a secret typo).
+        # Exit GREEN, not red — a blank template / mid-setup repo shouldn't spam
+        # the owner with failure emails every night. The log says what's missing.
+        print("Secrets not configured yet — missing: " + ", ".join(missing)
+              + ". Add them in Settings > Secrets and variables > Actions, then "
+              "run again. Skipping this run.")
+        return 0
 
     today = today_in_tz()
     state = load_state(STATE_PATH)
