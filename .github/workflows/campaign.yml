@@ -10,14 +10,13 @@ name: Daily campaign builder
 # ─────────────────────────────────────────────────────────────────────────
 
 on:
-  schedule:
-    # Cron is ALWAYS UTC and does NOT adjust for Daylight Saving Time.
-    # Target: 8:00 PM US Central (America/Chicago) — an evening wind-down reward.
-    #   • Summer (CDT, UTC-5):  8:00 PM Central = 01:00 UTC next day  <-- current setting
-    #   • Winter (CST, UTC-6):  8:00 PM Central = 02:00 UTC next day
-    # Twice a year flip this one number: spring -> "0 1 * * *", fall -> "0 2 * * *".
-    - cron: "0 1 * * *"
-  workflow_dispatch: {}   # manual "advance now" button in the Actions tab
+  # This workflow is fired once a day by an EXTERNAL scheduler (cron-job.org) that
+  # calls GitHub's API to dispatch it — see "Reliable daily delivery" in the
+  # README. GitHub's built-in `schedule:` cron is intentionally NOT used: it's
+  # unreliable (often hours late or skipped entirely), especially on new repos.
+  # The external trigger is dependable and handles Daylight Saving automatically.
+  # You can also run it by hand anytime from the Actions tab.
+  workflow_dispatch: {}
 
 permissions:
   contents: write   # needed to commit state + bibles + back-pocket back

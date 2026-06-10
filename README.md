@@ -131,6 +131,44 @@ first question. **Reply** to it, run the workflow again, and confirm the next
 question builds on your answer and that `bibles/<slug>.md` + `bibles/<slug>-canon.md`
 filled in.
 
+### 7. Set up reliable daily delivery (cron-job.org) — important
+
+This is the one non-obvious part. GitHub *has* a built-in scheduler, but it's
+**unreliable** — scheduled runs are frequently hours late or skipped entirely,
+especially on new repos. So instead of trusting it, a free external scheduler
+**fires the workflow for you once a day** by calling GitHub's API. Takes ~10
+minutes, costs nothing, and it's rock-solid.
+
+**A) Make a minimal GitHub token (~3 min):**
+1. Go to **https://github.com/settings/personal-access-tokens/new** (fine-grained).
+2. **Name:** `campaign-builder-trigger`. **Expiration:** 1 year (or "No expiration").
+3. **Resource owner:** you. **Repository access:** *Only select repositories* →
+   your `campaign-builder` repo.
+4. **Permissions → Repository → Actions:** set to **Read and write**. Leave
+   everything else at **No access**. Generate, and **copy the token**.
+
+**B) Create the cron-job.org job (~7 min):**
+1. Sign up free at **https://cron-job.org**, verify email, log in. Set your
+   account **timezone** (so it handles Daylight Saving for you).
+2. **Create cronjob:**
+   - **URL:** `https://api.github.com/repos/<you>/campaign-builder/actions/workflows/campaign.yml/dispatches`
+     (replace `<you>` with your GitHub username)
+   - **Schedule:** every day at the time you want your question (e.g. `19:45`).
+3. In the job's **Advanced / Headers & body**:
+   - **Request method:** `POST`
+   - **Headers:**
+     - `Authorization` → `Bearer YOUR_TOKEN` *(the word Bearer, one space, the token — no `+`)*
+     - `Accept` → `application/vnd.github+json`
+     - `Content-Type` → `application/json`
+     - `User-Agent` → `campaign-builder`
+   - **Request body:** `{"ref":"main"}`
+4. **Save**, then use the **Test run** button. A **`204 No Content`** response =
+   success (GitHub returns 204 on a good trigger). Check your **Actions** tab for a
+   fresh `workflow_dispatch` run appearing — that's it working.
+
+> Tip: turn on cron-job.org's failure notifications so you're emailed if the
+> trigger ever breaks (e.g. the token expires in a year).
+
 ---
 
 ## Day to day
@@ -170,7 +208,7 @@ Change those two and add that provider's key secret (`ANTHROPIC_API_KEY` or
 | `CAMPAIGN_RECIPIENT` | — (secret) | Where questions go / whose replies to read |
 | `GEMINI_API_KEY` | — (secret) | Free Gemini key |
 | `AI_PROVIDER` / `AI_MODEL` | `gemini` / `gemini-2.5-flash` | The AI swap point |
-| `IMAP_FOLDER` | `Campaigns` | Label on the bot account the script reads (set to `INBOX` for a single-account, no-filter setup) |
+| `IMAP_FOLDER` | `INBOX` | Mailbox/label the script reads (default works for a single-account setup; use a label if you archive) |
 | `RESEND_AFTER_DAYS` | `0` | Resend a question once after N silent days (0 = off) |
 | `TIMEZONE` | `America/Chicago` | For dating entries |
 
@@ -193,7 +231,7 @@ Email/SMTP vars (`SENDER_EMAIL`, `SENDER_APP_PASSWORD`, `SMTP_*`, `USE_SSL`,
 | `bibles/<slug>-canon.md` | The distilled, queryable world canon. |
 | `back-pocket/<slug>.md` | Finished, ready-to-run one-shots. |
 | `docs/templates-and-filing.md` | The master templates the canon distills toward. |
-| `.github/workflows/campaign.yml` | The daily schedule + keepalive commit. |
+| `.github/workflows/campaign.yml` | The job that runs the builder + saves state back. Fired daily by cron-job.org (see step 7). |
 
 ---
 
@@ -207,5 +245,9 @@ Email/SMTP vars (`SENDER_EMAIL`, `SENDER_APP_PASSWORD`, `SMTP_*`, `USE_SSL`,
 - **"reply ingest failed" in the log:** it still sends questions; it just skipped
   reading mail this run (transient IMAP hiccup or wrong `IMAP_FOLDER`). Catches up
   next run.
-- **Email arrives an hour off:** Daylight Saving; flip the one cron number in
-  `campaign.yml`.
+- **No question arrives at the scheduled time:** check your cron-job.org job ran
+  (its execution history) and that its last response was `204`. If a token expired,
+  regenerate it (step 7A) and update the `Authorization` header. Daylight Saving is
+  handled automatically by cron-job.org's timezone — nothing to flip.
+- **Two questions in one evening (rare):** only happens if you reply within a few
+  minutes of getting a question and the trigger fires again right after. Harmless.
