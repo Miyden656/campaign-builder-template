@@ -189,9 +189,10 @@ the next question (under the daily cap). Your cron-job.org schedule sets the
   answer again when the next one arrives and keep going — or stop anytime; it
   waits and never nags.
 - **The slow-burn cap:** at most `MAX_ROUNDS_PER_DAY` (default 12) questions per
-  day across all campaigns, resetting at local midnight. On **light days**
-  (default `wed,sun`) the cap is pinned to 1. Both are one-line env edits in
-  `campaign.yml`.
+  day across all campaigns, resetting at local midnight — a one-line env edit in
+  `campaign.yml`. Busy days need no special handling: the system only sends
+  after you reply, so a day you don't answer is a day with no mail. (An optional
+  `LIGHT_DAYS` knob can hard-pin chosen weekdays to 1 question; it ships off.)
 - **Start a new campaign from any email:** reply
   `NEW CAMPAIGN: <system> | <name> | <optional seed>` (system required; include
   `[one-shot]` in the seed for a one-shot). It spins up a fresh, fully isolated
@@ -240,7 +241,7 @@ Change those two and add that provider's key secret (`ANTHROPIC_API_KEY` or
 | `IMAP_FOLDER` | `INBOX` | Mailbox/label the script reads (default works for a single-account setup; use a label if you archive) |
 | `RESEND_AFTER_DAYS` | `0` | Resend a question once after N silent days (0 = off) |
 | `MAX_ROUNDS_PER_DAY` | `12` | Global cap on question rounds per day (all campaigns); resets at local midnight |
-| `LIGHT_DAYS` | `wed,sun` | Weekdays where the cap is pinned to 1 (comma list: mon..sun) |
+| `LIGHT_DAYS` | *(empty — off)* | Optional: weekdays where the cap is pinned to 1 (comma list, e.g. `wed,sun`) |
 | `TIMEZONE` | `America/Chicago` | For dating entries |
 
 Email/SMTP vars (`SENDER_EMAIL`, `SENDER_APP_PASSWORD`, `SMTP_*`, `USE_SSL`,

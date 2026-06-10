@@ -65,8 +65,10 @@ jobs:
           # campaigns, reset at local midnight (TIMEZONE). Raise it any evening
           # by editing this one value.
           MAX_ROUNDS_PER_DAY: "12"
-          # Light days: on these weekdays the cap is pinned to 1 question.
-          LIGHT_DAYS: "wed,sun"
+          # Light days (optional, OFF by default): weekdays where the cap is
+          # pinned to 1, e.g. "wed,sun". Usually unnecessary — the system only
+          # sends after you reply, so busy days naturally produce no mail.
+          LIGHT_DAYS: ""
         run: python campaign_builder.py
 
       - name: Commit state + bibles + back-pocket (keepalive)
