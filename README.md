@@ -131,13 +131,24 @@ first question. **Reply** to it, run the workflow again, and confirm the next
 question builds on your answer and that `bibles/<slug>.md` + `bibles/<slug>-canon.md`
 filled in.
 
-### 7. Set up reliable daily delivery (cron-job.org) — important
+### 7. Set up reliable delivery (cron-job.org) — important
 
 This is the one non-obvious part. GitHub *has* a built-in scheduler, but it's
 **unreliable** — scheduled runs are frequently hours late or skipped entirely,
 especially on new repos. So instead of trusting it, a free external scheduler
-**fires the workflow for you once a day** by calling GitHub's API. Takes ~10
-minutes, costs nothing, and it's rock-solid.
+**fires the workflow for you** by calling GitHub's API. Takes ~10 minutes, costs
+nothing, and it's rock-solid.
+
+The workflow **polls**: each run checks the mailbox, files any reply, and sends
+the next question (under the daily cap). Your cron-job.org schedule sets the
+*pace*:
+- **Once a day** at your favorite hour → the classic one-question-a-day rhythm.
+- **Every 30 minutes** (recommended; restrict to ~6:00–23:30) → on a free
+  evening you can answer, get the next question back within ~30 minutes, and
+  keep going — several rounds in one sitting. The daily cap (below) protects the
+  slow burn. This uses ~1,100 of GitHub's 2,000 free monthly Actions minutes
+  (each run bills as a rounded-up minute), so keep night hours off if you run
+  other private-repo automations.
 
 **A) Make a minimal GitHub token (~3 min):**
 1. Go to **https://github.com/settings/personal-access-tokens/new** (fine-grained).
@@ -153,7 +164,8 @@ minutes, costs nothing, and it's rock-solid.
 2. **Create cronjob:**
    - **URL:** `https://api.github.com/repos/<you>/campaign-builder/actions/workflows/campaign.yml/dispatches`
      (replace `<you>` with your GitHub username)
-   - **Schedule:** every day at the time you want your question (e.g. `19:45`).
+   - **Schedule:** every 30 minutes with hours ~6–23 enabled (or once a day at
+     the hour you want your question — see the pacing note above).
 3. In the job's **Advanced / Headers & body**:
    - **Request method:** `POST`
    - **Headers:**
@@ -173,7 +185,17 @@ minutes, costs nothing, and it's rock-solid.
 
 ## Day to day
 
-- **Answer** by replying under each question.
+- **Answer** by replying under each question. With 30-minute polling you can
+  answer again when the next one arrives and keep going — or stop anytime; it
+  waits and never nags.
+- **The slow-burn cap:** at most `MAX_ROUNDS_PER_DAY` (default 12) questions per
+  day across all campaigns, resetting at local midnight. On **light days**
+  (default `wed,sun`) the cap is pinned to 1. Both are one-line env edits in
+  `campaign.yml`.
+- **Start a new campaign from any email:** reply
+  `NEW CAMPAIGN: <system> | <name> | <optional seed>` (system required; include
+  `[one-shot]` in the seed for a one-shot). It spins up a fresh, fully isolated
+  brainstorm without touching the campaign you replied from.
 - **Look something up:** reply `CANON: <a place, person, or faction>` and it tells
   you what your world bible already knows about it.
 - **Get the next question now:** Actions → Run workflow.
@@ -181,6 +203,13 @@ minutes, costs nothing, and it's rock-solid.
   tags a one-shot).
 - **Read your world:** `bibles/<slug>.md` (full Q&A) and `bibles/<slug>-canon.md`
   (distilled facts). Finished one-shots: `back-pocket/<slug>.md`.
+
+**How replies route (campaigns never mix):** every outbound email carries a
+hidden routing token in its footer (e.g. `[cb:storm-coast#14]`). Your reply
+quotes it, so answers land in the right campaign even if you edit the subject or
+write a fresh email — include `[cb:<slug>]` anywhere to force a campaign. If a
+message can't be routed confidently, the system emails back asking which
+campaign you meant instead of guessing.
 
 Slug = the name lowercased with non-letters turned to hyphens ("Storm Coast" →
 `storm-coast`).
@@ -210,6 +239,8 @@ Change those two and add that provider's key secret (`ANTHROPIC_API_KEY` or
 | `AI_PROVIDER` / `AI_MODEL` | `gemini` / `gemini-2.5-flash` | The AI swap point |
 | `IMAP_FOLDER` | `INBOX` | Mailbox/label the script reads (default works for a single-account setup; use a label if you archive) |
 | `RESEND_AFTER_DAYS` | `0` | Resend a question once after N silent days (0 = off) |
+| `MAX_ROUNDS_PER_DAY` | `12` | Global cap on question rounds per day (all campaigns); resets at local midnight |
+| `LIGHT_DAYS` | `wed,sun` | Weekdays where the cap is pinned to 1 (comma list: mon..sun) |
 | `TIMEZONE` | `America/Chicago` | For dating entries |
 
 Email/SMTP vars (`SENDER_EMAIL`, `SENDER_APP_PASSWORD`, `SMTP_*`, `USE_SSL`,

@@ -97,6 +97,13 @@ IMAP_FOLDER = _env("IMAP_FOLDER", "INBOX")
 TIMEZONE = _env("TIMEZONE", "America/Chicago")
 RESEND_AFTER_DAYS = _env_int("RESEND_AFTER_DAYS", 0)
 
+# Slow-burn guard: a GLOBAL cap on question rounds per day (across all
+# campaigns), resetting at local midnight in TIMEZONE. On "light days" the cap
+# is pinned to 1 standard question regardless. Both are one-line env edits.
+MAX_ROUNDS_PER_DAY = _env_int("MAX_ROUNDS_PER_DAY", 12)
+LIGHT_DAYS = {d.strip().lower()[:3] for d in
+              _env("LIGHT_DAYS", "wed,sun").split(",") if d.strip()}
+
 AI_PROVIDER = _env("AI_PROVIDER", "gemini").strip().lower()
 AI_MODEL = _env("AI_MODEL", "gemini-2.5-flash")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
@@ -110,6 +117,18 @@ SUBJECT_TAG_RE = re.compile(r"^\s*(?:re:\s*)*\[(?P<name>[^\]]+)\]", re.I)
 # filter catch ALL campaign mail (and replies, which quote it) regardless of
 # campaign — the basis of the "Campaigns" archive label the builder reads.
 STABLE_TAG = "#campaignbuilder"
+
+# Machine-readable routing token stamped next to STABLE_TAG, e.g.
+# [cb:ember-isles#14]. A reply quotes it, so the system can route the answer to
+# the right campaign even if the subject was edited or threading headers are
+# missing. Parsed from the RAW body (quotes included) — token beats threading.
+TOKEN_RE = re.compile(r"\[cb:(?P<slug>[a-z0-9-]+)(?:#(?P<turn>\d+))?\]", re.I)
+
+# Reply command that spins up a brand-new campaign from inside any email:
+#   NEW CAMPAIGN: <system> | <name> | <optional seed>
+# The system part is REQUIRED (no guessing); a malformed command gets a help
+# email back instead of silently doing the wrong thing.
+NEWCMD_RE = re.compile(r"^\s*new\s+campaign\s*:\s*(?P<rest>.+)$", re.I | re.S)
 
 
 # --- Sprints ---------------------------------------------------------------
@@ -230,6 +249,40 @@ def slugify(name):
     return s or "campaign"
 
 
+# --- Daily round cap (the slow-burn guard) ----------------------------------
+
+
+def weekday_key(today_str):
+    """3-letter weekday key ('mon'..'sun') for an ISO date string."""
+    try:
+        return date.fromisoformat(today_str).strftime("%a").lower()[:3]
+    except ValueError:
+        return ""
+
+
+def cap_for(today_str):
+    """Today's global question-round cap: 1 on light days, else the env cap."""
+    if weekday_key(today_str) in LIGHT_DAYS:
+        return 1
+    return max(MAX_ROUNDS_PER_DAY, 0)
+
+
+def rounds_left(state, today_str):
+    """Remaining question rounds today (global, all campaigns). Resets the
+    counter at the first call past local midnight."""
+    if state.get("rounds_date") != today_str:
+        state["rounds_date"] = today_str
+        state["rounds_today"] = 0
+    return cap_for(today_str) - state.get("rounds_today", 0)
+
+
+def count_round(state, today_str):
+    if state.get("rounds_date") != today_str:
+        state["rounds_date"] = today_str
+        state["rounds_today"] = 0
+    state["rounds_today"] = state.get("rounds_today", 0) + 1
+
+
 def bible_path(slug):
     return os.path.join(BIBLES_DIR, slug + ".md")
 
@@ -320,7 +373,10 @@ def parse_campaigns(path):
 
 def default_state():
     return {"campaigns": {}, "processed_uids": {}, "sent_message_ids": [],
-            "last_run_date": None}
+            "last_run_date": None,
+            # Global slow-burn counter: question rounds sent today (all
+            # campaigns combined). Resets when rounds_date != today.
+            "rounds_date": None, "rounds_today": 0}
 
 
 def default_campaign(system, name, ctype="campaign"):
@@ -339,7 +395,8 @@ def default_campaign(system, name, ctype="campaign"):
         "awaiting_since": None,
         "flagged_empty": False,
         "resend_count": 0,
-        # transient flags set during a run:
+        # Set at ingest time, consumed at send time (persisted — with the daily
+        # cap, the send can happen on a later run than the ingest):
         "pending_sprint_complete": False,
         "pending_recap": "",
         "pending_canon_query": "",
@@ -365,6 +422,9 @@ def load_state(path):
     if not isinstance(data["sent_message_ids"], list):
         data["sent_message_ids"] = []
     data.setdefault("last_run_date", None)
+    data.setdefault("rounds_date", None)
+    if not isinstance(data.get("rounds_today"), int):
+        data["rounds_today"] = 0
     for slug, c in list(data["campaigns"].items()):
         if not isinstance(c, dict):
             data["campaigns"][slug] = default_campaign("", slug)
@@ -377,13 +437,11 @@ def load_state(path):
 
 
 def save_state(path, state):
-    # Drop transient flags before persisting (they're per-run scratch).
-    out = json.loads(json.dumps(state))
-    for c in out.get("campaigns", {}).values():
-        for k in ("pending_sprint_complete", "pending_recap", "pending_canon_query"):
-            c.pop(k, None)
+    # The pending_* flags ARE persisted: with the daily cap, an ingested answer
+    # can wait until tomorrow before its next question goes out, and the sprint
+    # assessment (complete? recap?) must survive across runs until it's used.
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump(out, fh, indent=2, ensure_ascii=False)
+        json.dump(state, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
 
 
@@ -762,8 +820,10 @@ def update_canon(slug, name, entries, today, sprint_label):
 # --- SMTP ------------------------------------------------------------------
 
 
-def send_email(to_addr, subject, body, message_id=None, in_reply_to=None):
-    body = body.rstrip() + "\n\n" + STABLE_TAG + "\n"
+def send_email(to_addr, subject, body, message_id=None, in_reply_to=None,
+               token=None):
+    footer = STABLE_TAG + (f" [cb:{token}]" if token else "")
+    body = body.rstrip() + "\n\n" + footer + "\n"
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = formataddr((SENDER_NAME, SENDER_EMAIL))
@@ -839,7 +899,10 @@ def compose_question_email(campaign, cstate, sprint, qjson, recap_block):
     lines.append("———")
     lines.append("Reply with your answer under each question. Tip: reply "
                  "`CANON: <thing>` and I'll tell you what the world bible "
-                 "already knows. No rush — nothing moves until you answer.")
+                 "already knows. Or start something new: reply "
+                 "`NEW CAMPAIGN: <system> | <name>` for a fresh brainstorm "
+                 "(this campaign is untouched). No rush — nothing moves until "
+                 "you answer.")
     return "\n".join(lines), questions
 
 
@@ -868,13 +931,82 @@ def _search_uids(imap):
     return []
 
 
+def handle_new_campaign_command(rest, state, campaigns_by_slug):
+    """Process `NEW CAMPAIGN: <system> | <name> | <seed>` from any reply.
+
+    Creates an isolated campaign: its own line in campaigns.txt, its own state
+    entry, and (via the normal advance path) its own bible + canon files. The
+    campaign the command arrived from is never touched. Returns a short log
+    string; sends a help/confirmation email as appropriate."""
+    first_line = rest.strip().splitlines()[0] if rest.strip() else ""
+    parts = [p.strip() for p in first_line.split("|")]
+    system = parts[0] if len(parts) > 0 else ""
+    name = parts[1] if len(parts) > 1 else ""
+    seed = parts[2] if len(parts) > 2 else ""
+
+    if not system or not name:
+        send_email(
+            CAMPAIGN_RECIPIENT,
+            "[Campaign Builder] NEW CAMPAIGN needs a system and a name",
+            "Almost! The format is:\n\n"
+            "  NEW CAMPAIGN: <system> | <name> | <optional seed>\n\n"
+            "The system is required so nothing gets assumed. Examples:\n"
+            "  NEW CAMPAIGN: D&D 5e | Embergard\n"
+            "  NEW CAMPAIGN: Cosmere RPG | Ashfall | [one-shot] a heist during "
+            "a highstorm\n\n"
+            "Reply to any campaign email with a corrected command (on its own, "
+            "as the whole reply).")
+        return "malformed NEW CAMPAIGN command — sent format help"
+
+    slug = slugify(name)
+    if slug in state["campaigns"] or slug in campaigns_by_slug:
+        send_email(
+            CAMPAIGN_RECIPIENT,
+            f"[Campaign Builder] '{name}' already exists",
+            f"A campaign with the name '{name}' (slug '{slug}') already exists, "
+            "so nothing was created. Pick a different name and send the command "
+            "again.")
+        return f"NEW CAMPAIGN '{slug}' already exists — sent notice"
+
+    ctype = "one-shot" if ONESHOT_TOKEN_RE.search(first_line) else "campaign"
+    line = f"{system} | {name}" + (f" | {seed}" if seed else "")
+    append_text(CAMPAIGNS_PATH, "\n" + line + "\n")
+    state["campaigns"][slug] = default_campaign(system, name, ctype)
+    return f"created new {ctype} '{slug}' from email command"
+
+
+def send_which_campaign_email(state, campaigns_by_slug):
+    """We got a reply we couldn't confidently route — ask, never guess."""
+    active = [(slug, c) for slug, c in state["campaigns"].items()
+              if c.get("status") != "complete" and slug in campaigns_by_slug]
+    lines = ["I got a reply but couldn't tell which campaign it belongs to, so "
+             "I didn't file it anywhere (campaigns never mix).", "",
+             "To send it again, either reply directly to that campaign's latest "
+             "question email, or include its routing tag anywhere in your "
+             "reply:", ""]
+    for slug, c in active:
+        waiting = " (waiting on you)" if c.get("status") == "awaiting_reply" else ""
+        lines.append(f"  - {c.get('name', slug)}  ->  [cb:{slug}]{waiting}")
+    if not active:
+        lines.append("  (no active campaigns)")
+    send_email(CAMPAIGN_RECIPIENT,
+               "[Campaign Builder] Which campaign is this for?",
+               "\n".join(lines))
+
+
 def ingest_replies(imap, state, campaigns_by_slug, today):
-    """Read new replies, file answers, distill canon, set campaigns ready.
-    Canon queries (`CANON: ...`) are flagged for a reply instead of advancing."""
+    """Read new mail and route each message to the right campaign.
+
+    Routing priority (campaigns must never mix):
+      1. the [cb:slug] token quoted from our footer — survives edited subjects
+         and fresh (unthreaded) emails;
+      2. threading headers against the last question's Message-ID;
+      3. the [Name] subject tag.
+    A confident match files the answer (or CANON query). `NEW CAMPAIGN: ...`
+    spins up an isolated new campaign. Anything else gets a "which campaign?"
+    email rather than a guess."""
     awaiting = {slug: c for slug, c in state["campaigns"].items()
                 if c.get("status") == "awaiting_reply" and slug in campaigns_by_slug}
-    if not awaiting:
-        return
     by_msgid = {c["last_message_id"]: slug for slug, c in awaiting.items()
                 if c.get("last_message_id")}
 
@@ -901,36 +1033,68 @@ def ingest_replies(imap, state, campaigns_by_slug, today):
             processed.add(uid_s)
             continue
 
-        subject = _decode_header(msg.get("Subject", ""))
-        refs = (msg.get("In-Reply-To", "") + " " + msg.get("References", ""))
-        looks_reply = bool(msg.get("In-Reply-To")) or subject.lower().startswith("re:")
-
-        slug = None
-        for mid, cand in by_msgid.items():
-            if mid and mid in refs:
-                slug = cand
-                break
-        if slug is None:
-            m = SUBJECT_TAG_RE.match(subject)
-            if m and looks_reply:
-                tag_slug = slugify(m.group("name"))
-                if tag_slug in awaiting:
-                    slug = tag_slug
-        if slug is None:
-            continue
-
+        # Only the owner's replies count.
         from_addr = parseaddr(msg.get("From", ""))[1].lower()
         if recipient_addr and from_addr and from_addr != recipient_addr:
             processed.add(uid_s)
             continue
 
-        cstate = state["campaigns"][slug]
-        campaign = campaigns_by_slug[slug]
         raw = get_plain_body(msg)
         answer = extract_reply(raw)
         flagged = False
         if not answer.strip():
             answer, flagged = raw.strip(), True
+
+        # NEW CAMPAIGN command — handled before routing; it can arrive from
+        # inside ANY email (or a fresh one) and never touches its host campaign.
+        m = NEWCMD_RE.match(answer.strip())
+        if m and not flagged:
+            print(handle_new_campaign_command(m.group("rest"), state,
+                                              campaigns_by_slug))
+            processed.add(uid_s)
+            continue
+
+        subject = _decode_header(msg.get("Subject", ""))
+        refs = (msg.get("In-Reply-To", "") + " " + msg.get("References", ""))
+        looks_reply = bool(msg.get("In-Reply-To")) or subject.lower().startswith("re:")
+
+        # 1) Routing token (from the quoted footer) beats everything.
+        slug = None
+        tm = TOKEN_RE.search(raw)
+        if tm:
+            tok_slug = tm.group("slug").lower()
+            if tok_slug in awaiting:
+                slug = tok_slug
+            elif tok_slug in state["campaigns"]:
+                # A reply to a campaign that isn't waiting (stale/duplicate).
+                processed.add(uid_s)
+                print(f"Skipped stale reply tokened for '{tok_slug}' "
+                      "(not awaiting).")
+                continue
+        # 2) Threading headers.
+        if slug is None:
+            for mid, cand in by_msgid.items():
+                if mid and mid in refs:
+                    slug = cand
+                    break
+        # 3) Subject tag.
+        if slug is None:
+            sm = SUBJECT_TAG_RE.match(subject)
+            if sm and looks_reply:
+                tag_slug = slugify(sm.group("name"))
+                if tag_slug in awaiting:
+                    slug = tag_slug
+        if slug is None:
+            # Looks like one of ours (it's in the label and from the owner) but
+            # we can't place it confidently: ask, never guess.
+            if looks_reply or STABLE_TAG in raw:
+                send_which_campaign_email(state, campaigns_by_slug)
+                print("Unroutable reply — asked which campaign it belongs to.")
+            processed.add(uid_s)
+            continue
+
+        cstate = state["campaigns"][slug]
+        campaign = campaigns_by_slug[slug]
 
         # CANON query command — don't advance; flag a lookup reply.
         m = re.match(r"\s*canon\s*:\s*(?P<q>.+)", answer, re.I | re.S)
@@ -962,6 +1126,7 @@ def ingest_replies(imap, state, campaigns_by_slug, today):
         cstate["awaiting_since"] = None
         cstate["resend_count"] = 0
         by_msgid = {mid: s for mid, s in by_msgid.items() if s != slug}
+        awaiting.pop(slug, None)
         processed.add(uid_s)
         print(f"Ingested answer for '{slug}'"
               + (" (empty extraction — stored raw, flagged)" if flagged else ""))
@@ -1006,7 +1171,9 @@ def _send_question(campaign, cstate, state, sprint, today, recap_block, is_first
     type_tag = "one-shot: " if cstate.get("type") == "one-shot" else ""
     subject = (f"[{campaign['name']}] {type_tag}{sprint['label']} - "
                f"day {cstate['sprint_day']}")
-    send_email(CAMPAIGN_RECIPIENT, subject, body, message_id=message_id)
+    # Fresh standalone email (no In-Reply-To), carrying the routing token.
+    send_email(CAMPAIGN_RECIPIENT, subject, body, message_id=message_id,
+               token=f"{campaign['slug']}#{cstate['questions_asked'] + 1}")
 
     cstate["status"] = "awaiting_reply"
     cstate["questions_asked"] += 1
@@ -1039,7 +1206,7 @@ def finish_oneshot(campaign, cstate, state, today):
             "———\n\n" + summary.strip())
     message_id = make_msgid(domain=(SENDER_EMAIL.split("@")[-1] or "campaign.local"))
     send_email(CAMPAIGN_RECIPIENT, f"[{campaign['name']}] one-shot: Ready to run", body,
-               message_id=message_id)
+               message_id=message_id, token=campaign["slug"])
     _track_sent(state, message_id)
     cstate["status"] = "complete"
     cstate["completed_sprints"] = [s["key"] for s in ONESHOT_SPRINTS]
@@ -1132,7 +1299,7 @@ def answer_canon_query(campaign, cstate, state, today):
     message_id = make_msgid(domain=(SENDER_EMAIL.split("@")[-1] or "campaign.local"))
     send_email(CAMPAIGN_RECIPIENT,
                f"[{campaign['name']}] Canon: {query[:40]}", body,
-               message_id=message_id)
+               message_id=message_id, token=campaign["slug"])
     _track_sent(state, message_id)
     cstate["pending_canon_query"] = ""
     print(f"Answered canon query for '{campaign['slug']}'.")
@@ -1166,23 +1333,27 @@ def main():
         return 0
     by_slug = {c["slug"]: c for c in campaigns}
 
-    # 1) Ingest replies for awaiting campaigns.
-    if any(state["campaigns"].get(c["slug"], {}).get("status") == "awaiting_reply"
-           for c in campaigns):
+    # 1) Ingest replies. Always scan: NEW CAMPAIGN commands can arrive even
+    #    when nothing is awaiting a reply.
+    try:
+        imap = imap_connect()
         try:
-            imap = imap_connect()
+            ingest_replies(imap, state, by_slug, today)
+        finally:
             try:
-                ingest_replies(imap, state, by_slug, today)
-            finally:
-                try:
-                    imap.logout()
-                except Exception:
-                    pass
-        except Exception as exc:
-            print(f"WARN: reply ingest failed ({exc.__class__.__name__}: {exc}); "
-                  "continuing.")
+                imap.logout()
+            except Exception:
+                pass
+    except Exception as exc:
+        print(f"WARN: reply ingest failed ({exc.__class__.__name__}: {exc}); "
+              "continuing.")
 
-    # 2) Act on each campaign.
+    # A NEW CAMPAIGN command may have appended to campaigns.txt — reload so the
+    # new campaign gets its kickoff question this same run (cap permitting).
+    campaigns = parse_campaigns(CAMPAIGNS_PATH)
+    by_slug = {c["slug"]: c for c in campaigns}
+
+    # 2) Act on each campaign, under the global daily round cap.
     sent_any = False
     for campaign in campaigns:
         slug = campaign["slug"]
@@ -1192,13 +1363,20 @@ def main():
                 print(f"'{slug}' is complete; skipping.")
                 continue
             if cstate and cstate.get("pending_canon_query"):
+                # Canon lookups are free — they don't count against the cap.
                 answer_canon_query(campaign, cstate, state, today)
                 sent_any = True
                 continue
             is_new = (cstate is None or cstate.get("questions_asked", 0) == 0
                       or not os.path.exists(bible_path(slug)))
             if is_new or (cstate and cstate.get("status") == "ready"):
+                if rounds_left(state, today) <= 0:
+                    print(f"Daily cap reached ({cap_for(today)} round(s) on "
+                          f"{weekday_key(today)}); '{slug}' will advance "
+                          "after local midnight.")
+                    continue
                 advance_campaign(campaign, state, today)
+                count_round(state, today)
                 sent_any = True
             elif cstate and cstate.get("status") == "awaiting_reply":
                 if (RESEND_AFTER_DAYS > 0 and cstate.get("resend_count", 0) < 1
@@ -1224,9 +1402,10 @@ def _resend(campaign, cstate, today):
     qs = cstate.get("last_questions") or []
     body = ("Still waiting on this whenever you're ready:\n\n"
             + "\n\n".join(qs) + "\n\n———\nReply to lock it in. Only nudge.")
+    # Fresh standalone email; the token routes any reply to it correctly.
     send_email(CAMPAIGN_RECIPIENT,
                f"[{campaign['name']}] reminder", body,
-               in_reply_to=cstate.get("last_message_id") or None)
+               token=campaign["slug"])
     cstate["resend_count"] = cstate.get("resend_count", 0) + 1
     print(f"Resent reminder for '{campaign['slug']}'.")
 

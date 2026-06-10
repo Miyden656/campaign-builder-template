@@ -10,12 +10,13 @@ name: Daily campaign builder
 # ─────────────────────────────────────────────────────────────────────────
 
 on:
-  # This workflow is fired once a day by an EXTERNAL scheduler (cron-job.org) that
-  # calls GitHub's API to dispatch it — see "Reliable daily delivery" in the
-  # README. GitHub's built-in `schedule:` cron is intentionally NOT used: it's
-  # unreliable (often hours late or skipped entirely), especially on new repos.
-  # The external trigger is dependable and handles Daylight Saving automatically.
-  # You can also run it by hand anytime from the Actions tab.
+  # This workflow is fired by an EXTERNAL scheduler (cron-job.org) that calls
+  # GitHub's API to dispatch it — see "Reliable delivery" in the README. It
+  # POLLS: each run checks the mailbox, files any replies, and sends the next
+  # questions (under the daily cap), so an every-30-minutes schedule gives
+  # same-evening back-and-forth rounds. GitHub's built-in `schedule:` cron is
+  # intentionally NOT used: it's unreliable (often hours late or skipped),
+  # especially on new repos. You can also run it by hand from the Actions tab.
   workflow_dispatch: {}
 
 permissions:
@@ -60,14 +61,22 @@ jobs:
           AI_MODEL: gemini-2.5-flash
           # Optional: resend a question once after N days of silence (0 = never nag):
           RESEND_AFTER_DAYS: "0"
+          # Slow-burn guard: max question rounds per day, GLOBAL across all
+          # campaigns, reset at local midnight (TIMEZONE). Raise it any evening
+          # by editing this one value.
+          MAX_ROUNDS_PER_DAY: "12"
+          # Light days: on these weekdays the cap is pinned to 1 question.
+          LIGHT_DAYS: "wed,sun"
         run: python campaign_builder.py
 
       - name: Commit state + bibles + back-pocket (keepalive)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add campaign_state.json bibles back-pocket
-          if [ -n "$(git status --porcelain campaign_state.json bibles back-pocket)" ]; then
+          # campaigns.txt is included because the NEW CAMPAIGN email command
+          # appends new campaigns to it.
+          git add campaign_state.json campaigns.txt bibles back-pocket
+          if [ -n "$(git status --porcelain campaign_state.json campaigns.txt bibles back-pocket)" ]; then
             git commit -m "Update campaign state + bibles + canon [skip ci]"
             git push
           else
