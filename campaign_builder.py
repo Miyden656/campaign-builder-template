@@ -545,7 +545,10 @@ def _call_gemini(system, user, json_mode):
         raise AIError("GEMINI_API_KEY is not set.")
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{AI_MODEL}:generateContent?key={GEMINI_API_KEY}")
-    gen = {"temperature": 0.9, "maxOutputTokens": 4096}
+    # Generous ceiling: Gemini 2.5's internal "thinking" tokens count against
+    # this budget, and long bibles make it think harder — a low cap truncates
+    # the JSON and we fall back to a generic question.
+    gen = {"temperature": 0.9, "maxOutputTokens": 16384}
     if json_mode:
         gen["responseMimeType"] = "application/json"
     payload = {
@@ -632,8 +635,19 @@ def _loads_lenient(text):
         raise
 
 
-def call_ai_json(system, user):
-    return _loads_lenient(call_ai(system, user, json_mode=True))
+def call_ai_json(system, user, attempts=2):
+    """JSON-mode AI call with a retry when the response comes back garbled or
+    truncated (long bibles occasionally produce unparseable output). Network/
+    HTTP retries live inside call_ai; this guards the parse step."""
+    last = None
+    for i in range(attempts):
+        try:
+            return _loads_lenient(call_ai(system, user, json_mode=True))
+        except (json.JSONDecodeError, ValueError) as exc:
+            last = exc
+            print(f"AI JSON unparseable (attempt {i + 1}/{attempts}); retrying.")
+    raise AIError(f"AI returned unparseable JSON after {attempts} attempts: "
+                  f"{last.__class__.__name__}")
 
 
 # --- Prompt building -------------------------------------------------------
